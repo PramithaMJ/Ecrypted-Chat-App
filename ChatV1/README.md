@@ -56,3 +56,12 @@ The GUI displays cryptographic information in a separate pane, showing all secur
 ## Note
 
 This is the original version of the chat application. An improved, restructured version is available in the parent directory.
+
+
+## ScreenShot
+
+![1750362788039](images/README/1750362788039.png)
+
+![1750362799407](images/README/1750362799407.png)
+
+![1750362804412](images/README/1750362804412.png)
