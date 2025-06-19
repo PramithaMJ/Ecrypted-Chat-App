@@ -1,14 +1,21 @@
 package Chat;
 
 import javax.swing.*;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 import java.awt.*;
 import java.awt.event.*;
 import java.io.*;
 import java.net.*;
+import java.security.*;
+import java.security.spec.X509EncodedKeySpec;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Date;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -18,13 +25,20 @@ public class ChatServerGUI extends JFrame {
     private ServerSocket serverSocket;
     private ExecutorService pool;
     private boolean isRunning = false;
-    private final List<ClientHandler> clients = new ArrayList<>();
+    private final java.util.List<ClientHandler> clients = new ArrayList<>();
+    
+    // Cryptographic components
+    private KeyPair serverKeyPair;       // Server's RSA key pair
+    private Map<String, PublicKey> clientPublicKeys = new HashMap<>();  // Store client public keys
+    private Map<String, SecretKey> clientSessionKeys = new HashMap<>(); // Store session keys
     
     // GUI components
     private JTextArea logArea;
+    private JTextArea securityLogArea;  // For security-related logs
     private JButton startButton;
     private JButton stopButton;
     private JLabel statusLabel;
+    private JLabel securityStatusLabel; // Display security status
     private JList<String> clientList;
     private DefaultListModel<String> clientListModel;
     private JButton kickButton;
@@ -60,6 +74,13 @@ public class ChatServerGUI extends JFrame {
         logArea.setWrapStyleWord(true);
         logArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         
+        securityLogArea = new JTextArea();
+        securityLogArea.setEditable(false);
+        securityLogArea.setLineWrap(true);
+        securityLogArea.setWrapStyleWord(true);
+        securityLogArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 11));
+        securityLogArea.setForeground(new Color(0, 100, 0));
+        
         startButton = new JButton("Start Server");
         stopButton = new JButton("Stop Server");
         stopButton.setEnabled(false);
@@ -67,6 +88,10 @@ public class ChatServerGUI extends JFrame {
         statusLabel = new JLabel("Server Offline");
         statusLabel.setForeground(Color.RED);
         statusLabel.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 14));
+        
+        securityStatusLabel = new JLabel("Security Inactive");
+        securityStatusLabel.setForeground(Color.ORANGE);
+        securityStatusLabel.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 14));
         
         clientListModel = new DefaultListModel<>();
         clientList = new JList<>(clientListModel);
@@ -85,18 +110,29 @@ public class ChatServerGUI extends JFrame {
         JPanel mainPanel = new JPanel(new BorderLayout());
         
         // Server control panel
-        JPanel controlPanel = new JPanel();
+        JPanel controlPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         controlPanel.add(startButton);
         controlPanel.add(stopButton);
         controlPanel.add(statusLabel);
+        controlPanel.add(Box.createHorizontalStrut(20)); // Spacer
+        controlPanel.add(securityStatusLabel);
         
         // Create header panel
         JPanel headerPanel = new JPanel(new BorderLayout());
         headerPanel.add(controlPanel, BorderLayout.NORTH);
         
-        // Log area with scrolling
+        // Log tabs - regular log and security log
+        JTabbedPane logTabs = new JTabbedPane();
+        
+        // Regular log with scrolling
         JScrollPane logScrollPane = new JScrollPane(logArea);
-        logScrollPane.setBorder(BorderFactory.createTitledBorder("Server Log"));
+        logScrollPane.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+        logTabs.addTab("Server Log", logScrollPane);
+        
+        // Security log with scrolling
+        JScrollPane securityScrollPane = new JScrollPane(securityLogArea);
+        securityScrollPane.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+        logTabs.addTab("Security Log", securityScrollPane);
         
         // Client panel
         JPanel clientPanel = new JPanel(new BorderLayout());
@@ -119,7 +155,7 @@ public class ChatServerGUI extends JFrame {
         // Create split pane for log and clients
         JSplitPane splitPane = new JSplitPane(
             JSplitPane.HORIZONTAL_SPLIT,
-            logScrollPane,
+            logTabs,
             clientPanel
         );
         splitPane.setResizeWeight(0.7); // 70% to log, 30% to client list
@@ -131,6 +167,9 @@ public class ChatServerGUI extends JFrame {
         
         // Add the main panel to the content pane
         getContentPane().add(mainPanel);
+        
+        // Set a larger size for the server GUI
+        setSize(900, 700);
     }
 
     private void addListeners() {
@@ -165,6 +204,22 @@ public class ChatServerGUI extends JFrame {
             // Create a thread pool for handling clients
             pool = Executors.newCachedThreadPool();
             
+            // Generate RSA key pair for the server
+            try {
+                serverKeyPair = CryptoUtil.generateRSAKeyPair();
+                securityLog("Generated RSA key pair:");
+                securityLog("Public Key: " + CryptoUtil.publicKeyToString(serverKeyPair.getPublic()).substring(0, 40) + "...");
+                securityLog("Private Key: " + CryptoUtil.privateKeyToString(serverKeyPair.getPrivate()).substring(0, 40) + "...");
+                
+                // Update security status
+                securityStatusLabel.setText("Security Active");
+                securityStatusLabel.setForeground(new Color(0, 130, 0));
+            } catch (Exception ex) {
+                log("Warning: Could not initialize security components: " + ex.getMessage());
+                securityLog("Security initialization failed: " + ex.getMessage());
+                ex.printStackTrace();
+            }
+            
             // Create a server socket
             serverSocket = new ServerSocket(PORT);
             isRunning = true;
@@ -188,6 +243,21 @@ public class ChatServerGUI extends JFrame {
                 "Server Error",
                 JOptionPane.ERROR_MESSAGE);
         }
+    }
+    
+    /**
+     * Log a message to the security log area
+     */
+    private void securityLog(String message) {
+        // Format timestamp
+        SimpleDateFormat sdf = new SimpleDateFormat("HH:mm:ss");
+        String timestamp = sdf.format(new Date());
+        
+        // Append to security log on EDT
+        SwingUtilities.invokeLater(() -> {
+            securityLogArea.append("[" + timestamp + "] " + message + "\n");
+            securityLogArea.setCaretPosition(securityLogArea.getDocument().getLength());
+        });
     }
 
     private void stopServer() {
@@ -342,6 +412,10 @@ public class ChatServerGUI extends JFrame {
         private BufferedReader in;
         private String clientName;
         private String clientAddress;
+        private PublicKey clientPublicKey;      // Client's public key
+        private SecretKey sessionKey;           // Shared AES session key
+        private boolean secureConnectionEstablished = false;
+        private String authenticationChallenge; // For two-way authentication
         
         public ClientHandler(Socket socket) {
             this.clientSocket = socket;
@@ -351,7 +425,37 @@ public class ChatServerGUI extends JFrame {
         
         public void sendMessage(String message) {
             if (out != null) {
-                out.println(message);
+                // If we have a secure connection and a session key, encrypt the message
+                if (secureConnectionEstablished && sessionKey != null && clientPublicKey != null) {
+                    try {
+                        // Generate IV for this message
+                        IvParameterSpec iv = CryptoUtil.generateIV();
+                        
+                        // Encrypt the message with the session key
+                        String encryptedContent = CryptoUtil.encryptAES(message, sessionKey, iv);
+                        
+                        // Create a secure message
+                        SecureMessage secureMsg = new SecureMessage(
+                            SecureMessage.MessageType.ENCRYPTED_MESSAGE,
+                            "SERVER",
+                            encryptedContent
+                        );
+                        
+                        // Sign the message with the server's private key
+                        secureMsg.setSignature(CryptoUtil.sign(message, serverKeyPair.getPrivate()));
+                        
+                        // Send the encrypted message
+                        out.println(secureMsg.toTransmissionString());
+                        securityLog("Sent encrypted message to " + clientName);
+                    } catch (Exception ex) {
+                        log("Error encrypting message for " + clientName + ": " + ex.getMessage());
+                        // Fall back to unencrypted if encryption fails
+                        out.println(message);
+                    }
+                } else {
+                    // Send unencrypted if we don't have a secure connection
+                    out.println(message);
+                }
             }
         }
         
@@ -365,6 +469,14 @@ public class ChatServerGUI extends JFrame {
         
         public void close() {
             try {
+                // Remove keys related to this client
+                if (clientPublicKey != null) {
+                    clientPublicKeys.remove(clientName);
+                }
+                if (sessionKey != null) {
+                    clientSessionKeys.remove(clientName);
+                }
+                
                 if (clientSocket != null && !clientSocket.isClosed()) {
                     clientSocket.close();
                 }
@@ -385,11 +497,27 @@ public class ChatServerGUI extends JFrame {
                 sendMessage("Welcome to the Chat Server! Your default name is: " + clientName);
                 sendMessage("Type 'NAME: your_name' to set your name.");
                 
+                // If we have server keys, tell the client we support secure chat
+                if (serverKeyPair != null) {
+                    log("Waiting for secure connection from client: " + clientName);
+                }
+                
                 // Process messages from this client
                 String inputLine;
                 while ((inputLine = in.readLine()) != null) {
-                    // Check if client is setting their name
-                    if (inputLine.startsWith("NAME:")) {
+                    // Check if this is a secure message
+                    if (inputLine.contains("|")) {
+                        try {
+                            // Parse the secure message
+                            SecureMessage secureMessage = SecureMessage.parseFromString(inputLine);
+                            processSecureMessage(secureMessage);
+                        } catch (Exception ex) {
+                            log("Error processing secure message from " + clientName + ": " + ex.getMessage());
+                            securityLog("Error: " + ex.getMessage());
+                        }
+                    }
+                    // Regular message handling for unencrypted messages
+                    else if (inputLine.startsWith("NAME:")) {
                         String newName = inputLine.substring(5).trim();
                         if (!newName.isEmpty()) {
                             // Announce the name change
@@ -398,15 +526,13 @@ public class ChatServerGUI extends JFrame {
                             clientName = newName;
                             sendMessage("Name changed to: " + clientName);
                             updateClientList();
-                            continue;
                         }
                     }
-                    
-                    // Log the message
-                    log(clientName + ": " + inputLine);
-                    
-                    // Broadcast message to all other clients
-                    broadcast(inputLine, this);
+                    else {
+                        // Regular unencrypted message
+                        log(clientName + ": " + inputLine);
+                        broadcast(inputLine, this);
+                    }
                 }
             } catch (IOException e) {
                 if (isRunning) {
@@ -415,6 +541,157 @@ public class ChatServerGUI extends JFrame {
             } finally {
                 close();
             }
+        }
+        
+        /**
+         * Process different types of secure messages
+         */
+        private void processSecureMessage(SecureMessage message) {
+            try {
+                switch (message.getType()) {
+                    case PUBLIC_KEY_EXCHANGE:
+                        // Client is sending their public key
+                        securityLog("Received public key from " + clientName);
+                        
+                        // Store the client's public key
+                        clientPublicKey = CryptoUtil.stringToPublicKey(message.getContent());
+                        clientPublicKeys.put(clientName, clientPublicKey);
+                        
+                        // Send our public key back
+                        SecureMessage keyResponse = new SecureMessage(
+                            SecureMessage.MessageType.PUBLIC_KEY_EXCHANGE,
+                            "SERVER",
+                            CryptoUtil.publicKeyToString(serverKeyPair.getPublic())
+                        );
+                        out.println(keyResponse.toTransmissionString());
+                        securityLog("Sent server public key to " + clientName);
+                        
+                        // Send an authentication challenge
+                        String challenge = generateAuthChallenge();
+                        authenticationChallenge = challenge;
+                        SecureMessage challengeMsg = new SecureMessage(
+                            SecureMessage.MessageType.AUTH_CHALLENGE,
+                            "SERVER",
+                            challenge
+                        );
+                        out.println(challengeMsg.toTransmissionString());
+                        securityLog("Sent authentication challenge to " + clientName);
+                        break;
+                        
+                    case SYMMETRIC_KEY_EXCHANGE:
+                        // Client is sending an encrypted AES key
+                        securityLog("Received encrypted session key from " + clientName);
+                        
+                        // Decrypt the session key using our private key
+                        byte[] encryptedKeyBytes = Base64.getDecoder().decode(message.getContent());
+                        byte[] decryptedKeyBytes = CryptoUtil.decryptRSA(message.getContent(), serverKeyPair.getPrivate());
+                        sessionKey = new SecretKeySpec(decryptedKeyBytes, 0, decryptedKeyBytes.length, "AES");
+                        clientSessionKeys.put(clientName, sessionKey);
+                        
+                        securityLog("Decrypted session key from " + clientName);
+                        securityLog("Session key: " + CryptoUtil.secretKeyToString(sessionKey).substring(0, 40) + "...");
+                        
+                        // Verify the signature if provided
+                        if (message.getSignature() != null && clientPublicKey != null) {
+                            boolean verified = CryptoUtil.verify(
+                                message.getContent(),
+                                message.getSignature(),
+                                clientPublicKey
+                            );
+                            
+                            if (verified) {
+                                securityLog("Signature on key verified for " + clientName);
+                            } else {
+                                securityLog("WARNING: Key signature verification failed for " + clientName);
+                            }
+                        }
+                        break;
+                        
+                    case AUTH_RESPONSE:
+                        // Client is responding to our authentication challenge
+                        securityLog("Received authentication response from " + clientName);
+                        
+                        // Verify the response using the client's public key
+                        if (authenticationChallenge != null && clientPublicKey != null) {
+                            boolean verified = CryptoUtil.verify(
+                                authenticationChallenge,
+                                message.getContent(),
+                                clientPublicKey
+                            );
+                            
+                            if (verified) {
+                                // Authentication successful
+                                securityLog("Authentication successful for " + clientName);
+                                secureConnectionEstablished = true;
+                                
+                                // Send authentication success message
+                                SecureMessage successMsg = new SecureMessage(
+                                    SecureMessage.MessageType.AUTH_SUCCESS,
+                                    "SERVER",
+                                    "Authentication successful, secure connection established"
+                                );
+                                out.println(successMsg.toTransmissionString());
+                            } else {
+                                // Authentication failed
+                                securityLog("Authentication failed for " + clientName);
+                                
+                                SecureMessage failedMsg = new SecureMessage(
+                                    SecureMessage.MessageType.AUTH_FAILED,
+                                    "SERVER",
+                                    "Authentication failed, connection will be insecure"
+                                );
+                                out.println(failedMsg.toTransmissionString());
+                            }
+                        }
+                        break;
+                        
+                    case ENCRYPTED_MESSAGE:
+                        // Received an encrypted message
+                        if (sessionKey != null) {
+                            // Decrypt the message using the session key
+                            String decryptedMsg = CryptoUtil.decryptAES(message.getContent(), sessionKey);
+                            
+                            // Verify the signature if present
+                            boolean verified = false;
+                            if (message.getSignature() != null && clientPublicKey != null) {
+                                verified = CryptoUtil.verify(
+                                    decryptedMsg,
+                                    message.getSignature(),
+                                    clientPublicKey
+                                );
+                            }
+                            
+                            // Log the decrypted message
+                            log(clientName + ": " + decryptedMsg + (verified ? " [Verified]" : ""));
+                            
+                            // Broadcast to all other clients
+                            broadcast(decryptedMsg, this);
+                            
+                            securityLog("Received and decrypted message from " + clientName + 
+                                      (verified ? " (signature verified)" : " (unsigned or unverified)"));
+                        } else {
+                            log("Error: Received encrypted message from " + clientName + " but no session key available");
+                        }
+                        break;
+                        
+                    default:
+                        securityLog("Received unknown secure message type: " + message.getType() + " from " + clientName);
+                        break;
+                }
+            } catch (Exception ex) {
+                log("Error processing secure message: " + ex.getMessage());
+                securityLog("Error: " + ex.getMessage());
+                ex.printStackTrace();
+            }
+        }
+        
+        /**
+         * Generate a random challenge string for client authentication
+         */
+        private String generateAuthChallenge() {
+            byte[] challengeBytes = new byte[32];
+            new SecureRandom().nextBytes(challengeBytes);
+            return Base64.getEncoder().encodeToString(challengeBytes);
         }
     }
 
