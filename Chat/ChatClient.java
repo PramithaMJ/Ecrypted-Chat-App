@@ -12,27 +12,54 @@ import java.util.Scanner;
 public class ChatClient {
     // Port number for the server
     private static final int PORT = 12345;
-    static String input = null;
-    static String output = null;
     
-    public static void main(String[] args) throws IOException, UnknownHostException {
-        InetAddress ipAddress = InetAddress.getLocalHost();
-        Scanner scanner = new Scanner(System.in);
-        System.out.println("====Chat Client====");
-        System.out.println("Connecting to server at " + ipAddress.getHostAddress() + ":" + PORT);
+    public static void main(String[] args) {
+        try {
+            InetAddress serverAddress = InetAddress.getLocalHost();
+            Scanner scanner = new Scanner(System.in);
+            System.out.println("====Chat Client====");
+            System.out.println("Connecting to server at " + serverAddress.getHostAddress() + ":" + PORT);
 
-        // Create client socket
-        Socket socket = new Socket(ipAddress, PORT);
-
-        BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-        PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-
-        while (true) {
-            input = in.readLine();
-            System.out.println("Server: " + input);
-            System.out.print("Me: ");
-            out.println(input);
-
+            // Create client socket and connect to the server
+            Socket socket = new Socket(serverAddress, PORT);
+            System.out.println("Connected to the chat server!");
+            
+            // Set up input and output streams
+            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+            
+            // Start a thread to handle incoming messages
+            Thread messageReceiver = new Thread(() -> {
+                try {
+                    String message;
+                    while ((message = in.readLine()) != null) {
+                        System.out.println(message);
+                    }
+                } catch (IOException e) {
+                    System.out.println("Disconnected from server.");
+                }
+            });
+            messageReceiver.setDaemon(true); // Make this a daemon thread
+            messageReceiver.start();
+            
+            // Main thread handles user input and sending messages
+            System.out.println("Start typing messages (or 'exit' to quit):");
+            String userInput;
+            while (true) {
+                userInput = scanner.nextLine();
+                if (userInput.equalsIgnoreCase("exit")) {
+                    break;
+                }
+                out.println(userInput);
+            }
+            
+            // Clean up
+            System.out.println("Disconnecting from server...");
+            socket.close();
+            scanner.close();
+            
+        } catch (IOException e) {
+            System.out.println("Error: " + e.getMessage());
         }
     }
 }
