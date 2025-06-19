@@ -1,10 +1,14 @@
 package Chat;
 
 import javax.swing.*;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.IvParameterSpec;
 import java.awt.*;
 import java.awt.event.*;
 import java.io.*;
 import java.net.*;
+import java.security.*;
+import java.util.Base64;
 
 public class ChatClientGUI extends JFrame {
     // Network components
@@ -14,9 +18,16 @@ public class ChatClientGUI extends JFrame {
     private PrintWriter out;
     private BufferedReader in;
     private String clientName = "Guest";
+    
+    // Cryptographic components
+    private KeyPair keyPair;           // Client's RSA key pair
+    private PublicKey serverPublicKey; // Server's public key
+    private SecretKey sessionKey;      // AES session key for encryption
+    private boolean isSecureConnection = false;
 
     // GUI components
     private JTextArea chatArea;
+    private JTextArea securityInfoArea;  // Display cryptographic information
     private JTextField messageField;
     private JTextField nameField;
     private JButton sendButton;
@@ -24,6 +35,7 @@ public class ChatClientGUI extends JFrame {
     private JButton connectButton;
     private JButton disconnectButton;
     private JLabel statusLabel;
+    private JLabel securityStatusLabel;  // Secure connection status
 
     public ChatClientGUI() {
         // Set up the window
@@ -51,6 +63,12 @@ public class ChatClientGUI extends JFrame {
         chatArea.setLineWrap(true);
         chatArea.setWrapStyleWord(true);
         
+        securityInfoArea = new JTextArea();
+        securityInfoArea.setEditable(false);
+        securityInfoArea.setLineWrap(true);
+        securityInfoArea.setWrapStyleWord(true);
+        securityInfoArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 11));
+        
         messageField = new JTextField(30);
         nameField = new JTextField("Guest", 15);
         
@@ -66,21 +84,38 @@ public class ChatClientGUI extends JFrame {
         
         statusLabel = new JLabel("Not connected");
         statusLabel.setForeground(Color.RED);
+        
+        securityStatusLabel = new JLabel("Not Secure");
+        securityStatusLabel.setForeground(Color.RED);
+        securityStatusLabel.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
     }
 
     private void layoutComponents() {
         // Main content layout
         JPanel mainPanel = new JPanel(new BorderLayout());
         
-        // Chat area with scrolling
-        JScrollPane scrollPane = new JScrollPane(chatArea);
-        mainPanel.add(scrollPane, BorderLayout.CENTER);
+        // Split pane for chat and security info
+        JScrollPane chatScrollPane = new JScrollPane(chatArea);
+        chatScrollPane.setBorder(BorderFactory.createTitledBorder("Chat Messages"));
+        
+        JScrollPane securityScrollPane = new JScrollPane(securityInfoArea);
+        securityScrollPane.setBorder(BorderFactory.createTitledBorder("Security Information"));
+        
+        JSplitPane splitPane = new JSplitPane(
+            JSplitPane.VERTICAL_SPLIT,
+            chatScrollPane,
+            securityScrollPane
+        );
+        splitPane.setResizeWeight(0.7); // 70% to chat, 30% to security info
+        mainPanel.add(splitPane, BorderLayout.CENTER);
         
         // Control panel for connection management
-        JPanel connectionPanel = new JPanel();
+        JPanel connectionPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         connectionPanel.add(connectButton);
         connectionPanel.add(disconnectButton);
         connectionPanel.add(statusLabel);
+        connectionPanel.add(new JSeparator(SwingConstants.VERTICAL));
+        connectionPanel.add(securityStatusLabel);
         
         // Name panel
         JPanel namePanel = new JPanel();
@@ -103,6 +138,9 @@ public class ChatClientGUI extends JFrame {
         
         // Add the main panel to the content pane
         getContentPane().add(mainPanel);
+        
+        // Make the window a bit larger for the additional components
+        setSize(700, 600);
     }
 
     private void addListeners() {
@@ -140,13 +178,25 @@ public class ChatClientGUI extends JFrame {
             // Update UI state
             connectButton.setEnabled(false);
             disconnectButton.setEnabled(true);
-            sendButton.setEnabled(true);
-            setNameButton.setEnabled(true);
             statusLabel.setText("Connected to server");
             statusLabel.setForeground(Color.GREEN);
             
             // Add a welcome message
             appendToChatArea("Connected to the chat server!");
+            appendToChatArea("Establishing secure connection...");
+            
+            // Set up cryptographic components
+            try {
+                setupSecureConnection();
+            } catch (Exception ex) {
+                appendToChatArea("WARNING: Could not establish secure connection: " + ex.getMessage());
+                appendToSecurityInfo("Secure connection failed: " + ex.getMessage());
+                ex.printStackTrace();
+                
+                // Enable UI even without security
+                sendButton.setEnabled(true);
+                setNameButton.setEnabled(true);
+            }
             
             // Start a thread for receiving messages
             startMessageListener();
@@ -157,6 +207,41 @@ public class ChatClientGUI extends JFrame {
                 "Connection Error", 
                 JOptionPane.ERROR_MESSAGE);
         }
+    }
+    
+    /**
+     * Set up secure connection with the server using a hybrid cryptosystem
+     */
+    private void setupSecureConnection() throws Exception {
+        // 1. Generate RSA key pair for this client
+        appendToSecurityInfo("Generating RSA key pair...");
+        keyPair = CryptoUtil.generateRSAKeyPair();
+        appendToSecurityInfo("Client Public Key: " + CryptoUtil.publicKeyToString(keyPair.getPublic()).substring(0, 40) + "...");
+        appendToSecurityInfo("Client Private Key: " + CryptoUtil.privateKeyToString(keyPair.getPrivate()).substring(0, 40) + "...");
+        
+        // 2. Send our public key to the server
+        SecureMessage keyMessage = new SecureMessage(
+            SecureMessage.MessageType.PUBLIC_KEY_EXCHANGE,
+            clientName,
+            CryptoUtil.publicKeyToString(keyPair.getPublic())
+        );
+        out.println(keyMessage.toTransmissionString());
+        appendToSecurityInfo("Sent public key to server");
+        
+        // 3. Wait for the server's public key
+        appendToChatArea("Waiting for server public key...");
+        
+        // The rest of the authentication flow will be handled by the message listener
+    }
+    
+    /**
+     * Append text to the security info area
+     */
+    private void appendToSecurityInfo(String message) {
+        SwingUtilities.invokeLater(() -> {
+            securityInfoArea.append(message + "\n");
+            securityInfoArea.setCaretPosition(securityInfoArea.getDocument().getLength());
+        });
     }
 
     private void disconnectFromServer() {
@@ -184,8 +269,43 @@ public class ChatClientGUI extends JFrame {
             return;
         }
         
-        // Send the message to the server
-        out.println(message);
+        try {
+            // If we have a secure connection, encrypt the message
+            if (isSecureConnection && sessionKey != null) {
+                // Generate an IV for this message
+                IvParameterSpec iv = CryptoUtil.generateIV();
+                
+                // Encrypt the message with AES
+                String encryptedContent = CryptoUtil.encryptAES(message, sessionKey, iv);
+                
+                // Create a secure message
+                SecureMessage secureMsg = new SecureMessage(
+                    SecureMessage.MessageType.ENCRYPTED_MESSAGE,
+                    clientName,
+                    encryptedContent
+                );
+                
+                // Sign the message with our private key for authentication
+                String signature = CryptoUtil.sign(message, keyPair.getPrivate());
+                secureMsg.setSignature(signature);
+                
+                // Send the encrypted message to the server
+                out.println(secureMsg.toTransmissionString());
+                
+                // Log the original message in our chat area
+                appendToChatArea("You: " + message + " [Encrypted]");
+                appendToSecurityInfo("Sent encrypted message: " + message.substring(0, Math.min(20, message.length())) + 
+                                   (message.length() > 20 ? "..." : ""));
+            } else {
+                // Send the message unencrypted if no secure connection
+                out.println(message);
+                appendToChatArea("You: " + message + " [UNENCRYPTED]");
+                appendToSecurityInfo("WARNING: Message sent unencrypted");
+            }
+        } catch (Exception ex) {
+            appendToChatArea("Error encrypting message: " + ex.getMessage());
+            appendToSecurityInfo("Encryption error: " + ex.getMessage());
+        }
         
         // Clear the message field
         messageField.setText("");
@@ -206,11 +326,28 @@ public class ChatClientGUI extends JFrame {
         // Thread to listen for incoming messages
         new Thread(() -> {
             try {
-                String serverMessage;
-                while ((serverMessage = in.readLine()) != null) {
-                    // Use SwingUtilities to update UI from the EDT
-                    final String messageToAppend = serverMessage;
-                    SwingUtilities.invokeLater(() -> appendToChatArea(messageToAppend));
+                String serverMessageStr;
+                while ((serverMessageStr = in.readLine()) != null) {
+                    // Check if this is a secure message
+                    if (serverMessageStr.contains("|")) {
+                        try {
+                            // Parse the secure message
+                            final SecureMessage secureMessage = SecureMessage.parseFromString(serverMessageStr);
+                            
+                            // Process based on message type
+                            processSecureMessage(secureMessage);
+                        } catch (Exception ex) {
+                            final String errorMsg = "Error processing secure message: " + ex.getMessage();
+                            SwingUtilities.invokeLater(() -> {
+                                appendToChatArea(errorMsg);
+                                appendToSecurityInfo(errorMsg);
+                            });
+                        }
+                    } else {
+                        // Regular, non-secure message
+                        final String plainMessage = serverMessageStr;
+                        SwingUtilities.invokeLater(() -> appendToChatArea(plainMessage));
+                    }
                 }
             } catch (IOException e) {
                 if (!socket.isClosed()) {
@@ -221,6 +358,132 @@ public class ChatClientGUI extends JFrame {
                 }
             }
         }).start();
+    }
+    
+    /**
+     * Process different types of secure messages
+     */
+    private void processSecureMessage(final SecureMessage message) {
+        SwingUtilities.invokeLater(() -> {
+            try {
+                switch (message.getType()) {
+                    case PUBLIC_KEY_EXCHANGE:
+                        // Received server's public key
+                        appendToChatArea("Received server public key");
+                        appendToSecurityInfo("Server Public Key: " + message.getContent().substring(0, 40) + "...");
+                        
+                        // Store the server's public key
+                        serverPublicKey = CryptoUtil.stringToPublicKey(message.getContent());
+                        
+                        // Generate a symmetric AES key for the session
+                        sessionKey = CryptoUtil.generateAESKey();
+                        appendToSecurityInfo("Generated AES Session Key: " + 
+                            CryptoUtil.secretKeyToString(sessionKey).substring(0, 40) + "...");
+                        
+                        // Encrypt the AES key with the server's public key and send it
+                        String encryptedKey = CryptoUtil.encryptRSA(
+                            sessionKey.getEncoded(), 
+                            serverPublicKey
+                        );
+                        
+                        SecureMessage keyExchangeMsg = new SecureMessage(
+                            SecureMessage.MessageType.SYMMETRIC_KEY_EXCHANGE,
+                            clientName,
+                            encryptedKey
+                        );
+                        
+                        // Sign the key with our private key for authentication
+                        keyExchangeMsg.setSignature(CryptoUtil.sign(encryptedKey, keyPair.getPrivate()));
+                        
+                        // Send the encrypted key to the server
+                        out.println(keyExchangeMsg.toTransmissionString());
+                        appendToSecurityInfo("Sent encrypted AES key to server");
+                        break;
+                        
+                    case AUTH_CHALLENGE:
+                        // Server is challenging us to prove our identity
+                        appendToChatArea("Received authentication challenge from server");
+                        appendToSecurityInfo("Auth Challenge: " + message.getContent());
+                        
+                        // Sign the challenge with our private key
+                        String signedResponse = CryptoUtil.sign(message.getContent(), keyPair.getPrivate());
+                        
+                        // Send the signed response
+                        SecureMessage authResponse = new SecureMessage(
+                            SecureMessage.MessageType.AUTH_RESPONSE,
+                            clientName,
+                            signedResponse
+                        );
+                        out.println(authResponse.toTransmissionString());
+                        appendToSecurityInfo("Sent authentication response");
+                        break;
+                        
+                    case AUTH_SUCCESS:
+                        // Authentication successful
+                        isSecureConnection = true;
+                        appendToChatArea("Secure connection established with server!");
+                        appendToSecurityInfo("Authentication successful - secure connection established");
+                        
+                        // Update UI to show secure connection
+                        securityStatusLabel.setText("Secure Connection");
+                        securityStatusLabel.setForeground(new Color(0, 130, 0));
+                        
+                        // Enable message sending
+                        sendButton.setEnabled(true);
+                        setNameButton.setEnabled(true);
+                        break;
+                        
+                    case AUTH_FAILED:
+                        appendToChatArea("Authentication failed!");
+                        appendToSecurityInfo("WARNING: Authentication failed: " + message.getContent());
+                        
+                        // We'll still enable UI elements to allow communication, but warn about security
+                        sendButton.setEnabled(true);
+                        setNameButton.setEnabled(true);
+                        break;
+                        
+                    case ENCRYPTED_MESSAGE:
+                        if (sessionKey != null) {
+                            // Decrypt the message
+                            String decryptedMsg = CryptoUtil.decryptAES(message.getContent(), sessionKey);
+                            
+                            // Display the decrypted message
+                            appendToChatArea(message.getSender() + ": " + decryptedMsg);
+                            
+                            // Verify signature if present
+                            if (message.getSignature() != null && serverPublicKey != null) {
+                                boolean verified = CryptoUtil.verify(
+                                    decryptedMsg, 
+                                    message.getSignature(), 
+                                    serverPublicKey
+                                );
+                                if (verified) {
+                                    appendToSecurityInfo("Received encrypted message from " + 
+                                                       message.getSender() + " (signature verified)");
+                                } else {
+                                    appendToSecurityInfo("WARNING: Message signature verification failed!");
+                                }
+                            } else {
+                                appendToSecurityInfo("Received encrypted message from " + 
+                                                   message.getSender() + " (unsigned)");
+                            }
+                        } else {
+                            appendToChatArea("ERROR: Received encrypted message but no session key available");
+                            appendToSecurityInfo("ERROR: Cannot decrypt message, no session key");
+                        }
+                        break;
+                        
+                    default:
+                        appendToChatArea(message.toDisplayString());
+                        appendToSecurityInfo("Received message of type: " + message.getType());
+                        break;
+                }
+            } catch (Exception ex) {
+                appendToChatArea("Error processing message: " + ex.getMessage());
+                appendToSecurityInfo("Error: " + ex.getMessage());
+                ex.printStackTrace();
+            }
+        });
     }
 
     private void appendToChatArea(String message) {
