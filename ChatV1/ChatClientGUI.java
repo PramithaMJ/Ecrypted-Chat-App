@@ -1,4 +1,4 @@
-package Chat;
+package ChatV1;
 
 import javax.swing.*;
 import javax.crypto.SecretKey;

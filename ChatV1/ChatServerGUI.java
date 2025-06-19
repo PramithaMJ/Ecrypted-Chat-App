@@ -1,4 +1,4 @@
-package Chat;
+package ChatV1;
 
 import javax.swing.*;
 import javax.crypto.SecretKey;
@@ -9,7 +9,6 @@ import java.awt.event.*;
 import java.io.*;
 import java.net.*;
 import java.security.*;
-import java.security.spec.X509EncodedKeySpec;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -583,7 +582,6 @@ public class ChatServerGUI extends JFrame {
                         securityLog("Received encrypted session key from " + clientName);
                         
                         // Decrypt the session key using our private key
-                        byte[] encryptedKeyBytes = Base64.getDecoder().decode(message.getContent());
                         byte[] decryptedKeyBytes = CryptoUtil.decryptRSA(message.getContent(), serverKeyPair.getPrivate());
                         sessionKey = new SecretKeySpec(decryptedKeyBytes, 0, decryptedKeyBytes.length, "AES");
                         clientSessionKeys.put(clientName, sessionKey);

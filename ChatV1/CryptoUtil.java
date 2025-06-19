@@ -1,4 +1,4 @@
-package Chat;
+package ChatV1;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
